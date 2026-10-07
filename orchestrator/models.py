@@ -10,21 +10,26 @@ class TaskStatus(str, enum.Enum):
     """任务状态。合法流转见 ALLOWED_TRANSITIONS。"""
 
     PENDING = "PENDING"        # 已受理，等待调度
+    WAITING_DEPENDENCY = "WAITING_DEPENDENCY"  # 等待前置任务成功，未进入调度排队
     QUEUED = "QUEUED"          # 已分配目标设备，等待设备并发槽/资源
     RUNNING = "RUNNING"        # 正在执行
     WAITING_RETRY = "WAITING_RETRY"  # 失败后退避等待重试
     SUCCEEDED = "SUCCEEDED"    # 终态：成功
     FAILED = "FAILED"          # 终态：失败（重试耗尽或不可重试）
     CANCELLED = "CANCELLED"    # 终态：被取消
+    SKIPPED = "SKIPPED"        # 终态：前置未成功，级联终结，从未执行
 
 
 TERMINAL_STATES = frozenset(
-    {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELLED}
+    {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.SKIPPED}
 )
 
 ALLOWED_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     TaskStatus.PENDING: frozenset(
         {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCELLED, TaskStatus.FAILED}
+    ),
+    TaskStatus.WAITING_DEPENDENCY: frozenset(
+        {TaskStatus.PENDING, TaskStatus.SKIPPED, TaskStatus.CANCELLED}
     ),
     TaskStatus.QUEUED: frozenset(
         {TaskStatus.RUNNING, TaskStatus.CANCELLED, TaskStatus.FAILED}
@@ -38,6 +43,7 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     TaskStatus.SUCCEEDED: frozenset(),
     TaskStatus.FAILED: frozenset(),
     TaskStatus.CANCELLED: frozenset(),
+    TaskStatus.SKIPPED: frozenset(),
 }
 
 
@@ -48,6 +54,7 @@ class FailureReason(str, enum.Enum):
     TIMEOUT = "TIMEOUT"                   # 执行超时
     INTERNAL_ERROR = "INTERNAL_ERROR"     # 编排器内部错误
     CANCELLED_BY_USER = "CANCELLED_BY_USER"  # 人工取消
+    DEPENDENCY_FAILED = "DEPENDENCY_FAILED"  # 前置任务未成功，级联终结（从未执行）
 
 
 class RejectReason(str, enum.Enum):
@@ -58,6 +65,8 @@ class RejectReason(str, enum.Enum):
     TASK_ALREADY_FINISHED = "TASK_ALREADY_FINISHED"
     UNKNOWN_DEVICE = "UNKNOWN_DEVICE"
     UNKNOWN_RESOURCE = "UNKNOWN_RESOURCE"
+    SELF_DEPENDENCY = "SELF_DEPENDENCY"      # 任务依赖自己
+    DEPENDENCY_CYCLE = "DEPENDENCY_CYCLE"    # 依赖关系成环
 
 
 @dataclass
@@ -79,6 +88,7 @@ class TaskRecord:
     task_id: str
     device_id: str
     required_resources: tuple[str, ...] = ()
+    depends_on: tuple[str, ...] = ()  # 前置任务：全部成功后才允许进入调度
     status: TaskStatus = TaskStatus.PENDING
     attempts: int = 0
     max_attempts: int = 3
