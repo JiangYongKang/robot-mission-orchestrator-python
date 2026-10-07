@@ -10,6 +10,7 @@ class TaskStatus(str, enum.Enum):
     """任务状态。合法流转见 ALLOWED_TRANSITIONS。"""
 
     PENDING = "PENDING"        # 已受理，等待调度
+    WAITING_DEPS = "WAITING_DEPS"  # 等待前置任务完成，不参与设备/资源排队
     QUEUED = "QUEUED"          # 已分配目标设备，等待设备并发槽/资源
     RUNNING = "RUNNING"        # 正在执行
     WAITING_RETRY = "WAITING_RETRY"  # 失败后退避等待重试
@@ -25,6 +26,10 @@ TERMINAL_STATES = frozenset(
 ALLOWED_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     TaskStatus.PENDING: frozenset(
         {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCELLED, TaskStatus.FAILED}
+    ),
+    TaskStatus.WAITING_DEPS: frozenset(
+        # 依赖就绪 -> PENDING；前置失败/取消 -> 级联终结；也可被人工取消
+        {TaskStatus.PENDING, TaskStatus.CANCELLED, TaskStatus.FAILED}
     ),
     TaskStatus.QUEUED: frozenset(
         {TaskStatus.RUNNING, TaskStatus.CANCELLED, TaskStatus.FAILED}
@@ -48,6 +53,8 @@ class FailureReason(str, enum.Enum):
     TIMEOUT = "TIMEOUT"                   # 执行超时
     INTERNAL_ERROR = "INTERNAL_ERROR"     # 编排器内部错误
     CANCELLED_BY_USER = "CANCELLED_BY_USER"  # 人工取消
+    DEPENDENCY_FAILED = "DEPENDENCY_FAILED"    # 前置任务失败，级联终结（未执行）
+    DEPENDENCY_CANCELLED = "DEPENDENCY_CANCELLED"  # 前置任务被取消，级联终结（未执行）
 
 
 class RejectReason(str, enum.Enum):
@@ -58,6 +65,7 @@ class RejectReason(str, enum.Enum):
     TASK_ALREADY_FINISHED = "TASK_ALREADY_FINISHED"
     UNKNOWN_DEVICE = "UNKNOWN_DEVICE"
     UNKNOWN_RESOURCE = "UNKNOWN_RESOURCE"
+    DEPENDENCY_CYCLE = "DEPENDENCY_CYCLE"  # 自依赖或依赖成环
 
 
 @dataclass
@@ -79,6 +87,7 @@ class TaskRecord:
     task_id: str
     device_id: str
     required_resources: tuple[str, ...] = ()
+    depends_on: tuple[str, ...] = ()  # 前置任务：全部 SUCCEEDED 后才允许排队/执行
     status: TaskStatus = TaskStatus.PENDING
     attempts: int = 0
     max_attempts: int = 3

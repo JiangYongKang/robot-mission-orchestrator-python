@@ -20,6 +20,7 @@ _STATUS_TO_HTTP = {
     RejectReason.UNKNOWN_TASK: 404,
     RejectReason.UNKNOWN_DEVICE: 400,
     RejectReason.UNKNOWN_RESOURCE: 400,
+    RejectReason.DEPENDENCY_CYCLE: 400,
     RejectReason.ILLEGAL_TRANSITION: 409,
     RejectReason.TASK_ALREADY_FINISHED: 409,
 }
@@ -29,12 +30,14 @@ class SubmitRequest(BaseModel):
     task_id: str
     device_id: str
     required_resources: list[str] = []
+    depends_on: list[str] = []
     max_attempts: int = 3
     backoff_seconds: float = 0.01
 
 
 class InterveneRequest(BaseModel):
     action: str  # "retry" | "abort"
+    cascade: bool = False  # abort 时是否连带取消下游任务
 
 
 def _view(t: TaskRecord) -> dict:
@@ -42,6 +45,8 @@ def _view(t: TaskRecord) -> dict:
         "task_id": t.task_id,
         "device_id": t.device_id,
         "status": t.status.value,
+        "depends_on": list(t.depends_on),
+        "dependency_status": service.dependency_view(t.task_id),
         "attempts": t.attempts,
         "failure_reason": t.failure_reason.value if t.failure_reason else None,
         "result": t.result,
@@ -66,6 +71,7 @@ def submit_task(req: SubmitRequest):
         task_id=req.task_id,
         device_id=req.device_id,
         required_resources=tuple(req.required_resources),
+        depends_on=tuple(req.depends_on),
         max_attempts=req.max_attempts,
         backoff_seconds=req.backoff_seconds,
     )
@@ -78,13 +84,13 @@ def get_task(task_id: str):
 
 
 @app.post("/tasks/{task_id}/cancel")
-def cancel_task(task_id: str):
-    return _view(service.cancel(task_id))
+def cancel_task(task_id: str, cascade: bool = False):
+    return _view(service.cancel(task_id, cascade=cascade))
 
 
 @app.post("/tasks/{task_id}/intervene")
 def intervene_task(task_id: str, req: InterveneRequest):
-    return _view(service.intervene(task_id, req.action))
+    return _view(service.intervene(task_id, req.action, cascade=req.cascade))
 
 
 if __name__ == "__main__":
